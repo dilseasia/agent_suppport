@@ -1,312 +1,257 @@
 import os
 import logging
 import json
-import re
 from fastapi import APIRouter
 from dotenv import load_dotenv
 from sse_starlette.sse import EventSourceResponse
-from app.models.model import QueryRequest, ToolResponse
-from app.services.llm import GroqLLMClient
 from typing import Dict, List
-from app.utils.stream import stream_response
-from app.services.tools import weather, dealership, appointment
-# from app.config.prompt import prompt
-# from app.config.sample_data import final_prompt
 
+from app.models.model import QueryRequest
+from app.services.llm import GroqLLMClient
+from app.Agent.appointment import tool as appointment_tool, schema as appointment_schema
+from app.Agent.service import tool as service_tool, schema as service_schema
+from app.Agent.support import tool as support_tool, schema as support_schema
+from app.services.tools import weather, dealership
+from app.Agent.classifier import classify_query_with_gemini
 
 # Load environment variables
 load_dotenv()
 
 # Configure logging
 logging.basicConfig(
-    level=getattr(logging, os.getenv('LOG_LEVEL', 'INFO').upper()),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper()),
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
-
-# Initialize logger
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-
 chatbot_route = APIRouter()
 
-
-# Map tool name to actual tool function
-available_functions= {
+# -------------------------------
+# Tool Registry
+# -------------------------------
+available_functions = {
     "get_weather": weather.get_weather,
     "get_dealership_address": dealership.get_dealership_address,
-    "check_appointment_availability": appointment.check_appointment_availability,
-    "schedule_appointment": appointment.schedule_appointment
+
+    # Appointment
+    "book_appointment": appointment_tool.book_appointment,
+    "cancel_appointment": appointment_tool.cancel_appointment,
+    "reschedule_appointment": appointment_tool.reschedule_appointment,
+    "check_appointment": appointment_tool.check_appointment,
+
+    # Service
+    "list_services": service_tool.list_services,
+    "book_service": service_tool.book_service,
+    "check_service": service_tool.check_service,
+    "cancel_service": service_tool.cancel_service,
+
+    # Support
+    "check_ticket_status": support_tool.check_ticket_status,
+    "create_ticket": support_tool.create_ticket,
+    "escalate_ticket": support_tool.escalate_ticket,
+    "get_faq": support_tool.get_faq,
 }
 
+# Merge schema tools
+tools = [
+    *appointment_schema.tools,
+    *service_schema.tools,
+    *support_schema.tools,
+]
 
+# -------------------------------
+# System message for intents
+# -------------------------------
+def get_system_message_for_intent(intent: str) -> str:
+    messages = {
+        "appointment": (
+            "You are Lex, a smart appointment assistant for a luxury car dealership. "
+            "Help the user book, cancel, reschedule, or check appointments efficiently."
+        ),
+        "service": (
+            "You are Lex, a service assistant for a luxury car dealership. "
+            "Help the user book, check, or cancel car services."
+        ),
+        "support": (
+            "You are Lex, a support assistant for a luxury car dealership. "
+            "Help the user check ticket status, create tickets, escalate issues, and answer FAQs."
+        ),
+        "general": (
+            "You are Lex, a friendly AI assistant for a luxury car dealership. "
+            "You can help with general questions about cars, dealership locations, and services."
+        ),
+    }
+    return messages.get(intent, messages["general"])
 
-
-@chatbot_route.get("/")
-def healthcheck():
-    """Health check endpoint."""
-    return {
-        "status": "OK",
-        "message": "SuperCar Virtual Sales Assistant API is running! Replace this with your implementation."
-    } 
-
-
-# In-memory session storage (replace with Redis/database in production)
+# -------------------------------
+# In-memory session storage
+# -------------------------------
 session_storage: Dict[str, List[Dict[str, str]]] = {}
 
+# -------------------------------
+# Query Endpoint
+# -------------------------------
 @chatbot_route.post("/query")
 async def process_query(request: QueryRequest):
-    """
-    Main query endpoint that streams responses using Server-Sent Events
-    """
-    logger.info(f"Received query request: {request.query} (Session ID: {request.session_id})")
-    
+    logger.info(f"Received query: {request.query} (Session ID: {request.session_id})")
 
-    # Initialize Groq client
-    groq_client = GroqLLMClient()
-    logger.warning("checking session_storage")
-    logger.warning(session_storage)
-    
-    # Retrieve or initialize conversation history
+    # ---------------------------
+    # Step 1: Classification (Gemini first, Groq fallback)
+    # ---------------------------
+    try:
+        classification_result = classify_query_with_gemini(request.query)
+        logger.info(f"Classification (Gemini): {classification_result}")
+    except Exception as e:
+        logger.warning(f"Gemini classification failed: {e}")
+        logger.info("Falling back to Groq classifier...")
+        try:
+            groq_client = GroqLLMClient()
+            prompt = f"""
+            Classify the following query into one of these intents: 
+            appointment, service, support, general.
+            Query: "{request.query}"
+            Respond in JSON format: {{ "primary_intent": "<intent>", "corrected_query": "<maybe corrected query>" }}
+            """
+            response = groq_client.generate_response(messages=[{"role": "user", "content": prompt}])
+            classification_json = json.loads(response.choices[0].message.content)
+            classification_result = classification_json
+            logger.info(f"Classification (Groq fallback): {classification_result}")
+        except Exception as ge:
+            logger.error(f"Groq fallback failed: {ge}")
+            classification_result = {
+                "primary_intent": "general",
+                "corrected_query": request.query,
+                "out_of_context": False,
+                "intent": {"general": 1.0},
+            }
+
+    primary_intent = classification_result.get("primary_intent", "general").lower()
+    corrected_query = classification_result.get("corrected_query", request.query)
+    out_of_context = classification_result.get("out_of_context", False)
+    intent_scores = classification_result.get("intent", {})
+
+    # ---------------------------
+    # Step 2: Prepare conversation history
+    # ---------------------------
+    system_message = get_system_message_for_intent(primary_intent)
     conversation_history = session_storage.get(
-        request.session_id, 
-        [{"role": "system", "content": "You are a helpful sales assistant for SuperCar dealerships. you should know to call the tools or use"}]
+        request.session_id, [{"role": "system", "content": system_message}]
     )
-    logger.info(f"Conversation history retrieved for session {request.session_id}")
 
-    # Limit conversation history to prevent excessive memory usage
     MAX_HISTORY_LENGTH = 10
     if len(conversation_history) > MAX_HISTORY_LENGTH:
-        # Keep the system message and the most recent messages
         conversation_history = [conversation_history[0]] + conversation_history[-MAX_HISTORY_LENGTH:]
-    
-    # Add user's current query to conversation history
-    conversation_history.append({
-        "role": "user", 
-        "content": request.query
-    })
-    session_storage[request.session_id] = conversation_history
-    # logger.info(f"User query appended to conversation history: {request.query}")
 
-    # Define available tools (same as before)
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "get_weather",
-                "description": "Get current weather for a city",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "city": {"type": "string"}
-                    },
-                    "required": ["city"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "get_dealership_address",
-                "description": "Retrieve dealership address and details",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "dealership_id": {"type": "string"}
-                    },
-                    "required": ["dealership_id"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "check_appointment_availability",
-                "description": "Check available appointment slots for a dealership on a specific date",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "dealership_id": {"type": "string"},
-                        "date": {"type": "string"}
-                    },
-                    "required": ["dealership_id", "date"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "schedule_appointment",
-                "description": "Schedule an appointment at a SuperCar dealership",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "user_id": {"type": "string"},
-                        "dealership_id": {"type": "string"},
-                        "date": {"type": "string"},
-                        "time": {"type": "string"},
-                        "car_model": {"type": "string"}
-                    },
-                    "required": ["user_id", "dealership_id", "date", "time", "car_model"]
-                }
-            }
-        }
-        # {
-        #     "type": "function",
-        #     "function": {
-        #         "name": "knowledge_base",
-        #         "description": "You are an AI Sales Assistant for SuperCar Dealerships, designed to provide comprehensive, helpful, and professional automotive support. Based on user query decide that you need to use tool or you need to look your knowledge_base documents",
-        #         "parameters": {
-        #             "type": "object",
-        #             "properties": {
-        #             },
-        #             "required": []
-        #         }
-        #     }
-        # }
-    ]
-    
+    classification_context = f"[Intent: {primary_intent}, Confidence: {intent_scores.get(primary_intent, 0.0):.2f}]"
+    conversation_history.append({"role": "user", "content": f"{classification_context} {corrected_query}"})
+    session_storage[request.session_id] = conversation_history
+
+    # ---------------------------
+    # Step 3: Response Generation
+    # ---------------------------
+    groq_client = GroqLLMClient()
+
     async def event_generator():
         try:
-            # Check if user wants to end the conversation
-            if request.query.lower().strip() in ["end conversation", "exit", "quit", "goodbye", "bye"]:
-                # Clear the session from storage if user wants to end
-                if request.session_id in session_storage:
-                    del session_storage[request.session_id]
-                logger.info(f"Ending conversation for session {request.session_id}")
-                yield {"event": "chunk", "data": "I am glad i could help you"}
-                # yield {"event": "end", "data":None}
-                return 
-            
-            logger.info("Calling Groq API for response generation...")
-            # Call Groq API
-            response = groq_client.generate_response(
-                messages=conversation_history,
-                tools=tools
-            )
-            
-            if not response:
-                logger.error("Failed to generate response from Groq API")
-                yield {"event": "error", "data": "Failed to generate response"}
-                return
-            
-            response_message = response.choices[0].message
-            tool_calls = response_message.tool_calls
+            # Send classification info
+            yield {
+                "event": "classification",
+                "data": json.dumps({
+                    "primary_intent": primary_intent,
+                    "intent_scores": intent_scores,
+                    "out_of_context": out_of_context,
+                    "corrected_query": corrected_query,
+                }),
+            }
 
-            # If no tool calls, return direct response
-            if not tool_calls:
-                logger.info("checking chunk event")
-                full_response = response_message.content
-                yield {"event": "chunk", "data": full_response}
-
-                # Add assistant's response to conversation history
-                conversation_history.append({
-                    "role": "assistant", 
-                    "content": full_response
-                })
-                
-                # Update session storage
+            # Handle out-of-context queries
+            if out_of_context:
+                out_response = (
+                    "I'm Lex, your SuperCar dealership assistant. 🚗 "
+                    "I can help with car sales, appointments, service, and support. "
+                    "Could you rephrase your question related to these topics?"
+                )
+                yield {"event": "chunk", "data": out_response}
+                conversation_history.append({"role": "assistant", "content": out_response})
                 session_storage[request.session_id] = conversation_history
                 return
-            
-            if tool_calls:
-                logger.info("I am in tools call")
-                for tool_call in tool_calls:
-                    function_name = tool_call.function.name
 
-                    # Validate function exists
-                    if function_name not in available_functions:
-                        # error_msg = f"Requested function {function_name} is not available"
-                        # logger.error(error_msg)
-                        # yield {"event": "chunk", "data":"your query is out of context"}
-                        # return
-                        knowledge_base_response  = groq_client.knowledge_base_response(user_query=request.query)
+            # ---------------------------
+            # Tool Path (appointment/service/support)
+            # ---------------------------
+            response = groq_client.generate_response(messages=conversation_history, tools=tools)
+            response_message = response.choices[0].message
+            tool_calls = response_message.tool_calls or []
 
-                        match = re.search(r"\{(.*?)\}", knowledge_base_response)
-                        if match:
-                            gpt_response = match.group(1)
-                            if gpt_response:
-                                gpt_response = gpt_response.replace("```json", "")
-                                gpt_response = gpt_response.replace("```", "")
-                                gpt_response = gpt_response.strip()
-                                response_data = json.loads(gpt_response)
-                                result = response_data.get("response")
-                                yield {"event": "chunk", "data":result}
-                                return
-                        yield {"event": "chunk", "data":knowledge_base_response.content}
-                        return
+            # ---------------------------
+            # Force tool execution if no tool_calls
+            # ---------------------------
+            if not tool_calls:
+                logger.info("Forcing tool execution based on intent...")
+                if primary_intent in ["appointment", "appointment_agent"]:
+                    tool_name = "book_appointment"
+                elif primary_intent in ["service", "service_agent"]:
+                    tool_name = "list_services"
+                elif primary_intent in ["support", "support_agent"]:
+                    tool_name = "check_ticket_status"
+                else:
+                    tool_name = None
 
-
-                    
-                    function_to_call = available_functions.get(function_name)
-                    function_args = json.loads(tool_call.function.arguments)
-                    logging.warning("function_args")
-                    logging.warning(function_args)
-
-
-                    # Validate required parameters
-                    required_params = []
-                    for tool in tools:
-                        if tool["type"] == "function" and tool["function"]["name"] == function_name:
-                            required_params = tool["function"]["parameters"].get("required", [])
-                            break
-
-
-                    missing_params = [param for param in required_params if param not in function_args or not function_args[param]]
-                    if missing_params:
-                        error_msg = f"Missing required parameters for function '{function_name}': {', '.join(missing_params)}"
-                        logger.error(error_msg)
-                        
-                        # Handle missing parameters by requesting them from the user
-                        missing_params_response = f"I need more information to help you. Please provide: {', '.join(missing_params)}"
-                        yield {"event": "chunk", "data": missing_params_response}
-                        
-                        # Add to conversation history
-                        conversation_history.append({
-                            "role": "assistant",
-                            "content": missing_params_response
-                        })
-                        
-                        # Update session storage and return
+                if tool_name:
+                    tool_func = available_functions.get(tool_name)
+                    if tool_func:
+                        tool_response = tool_func()
+                        final_response = groq_client.final_response(
+                            user_query=request.query,
+                            function_response=json.dumps(tool_response)
+                        )
+                        data = {
+                            "name": tool_name,
+                            "output": tool_response,
+                            "message": final_response.content,
+                        }
+                        yield {"event": "tool_output", "data": json.dumps(data)}
+                        conversation_history.extend([
+                            {"role": "tool", "name": tool_name, "content": str(tool_response)},
+                            {"role": "assistant", "content": final_response.content},
+                        ])
                         session_storage[request.session_id] = conversation_history
                         return
-                    
 
-                    # Call the function and get the response
-                    function_response = function_to_call(**function_args)
-                    logging.warning("function_response")
-                    logging.warning(function_response)
+            # ---------------------------
+            # Normal response path
+            # ---------------------------
+            for tool_call in tool_calls:
+                function_name = tool_call.function.name
+                function_to_call = available_functions.get(function_name)
+                function_args = json.loads(tool_call.function.arguments)
+                function_response = function_to_call(**function_args)
+                final_response = groq_client.final_response(
+                    user_query=request.query,
+                    function_response=json.dumps(function_response)
+                )
+                data = {
+                    "name": function_name,
+                    "output": function_response,
+                    "message": final_response.content,
+                }
+                yield {"event": "tool_output", "data": json.dumps(data)}
+                conversation_history.extend([
+                    {"role": "tool", "name": function_name, "content": str(function_response)},
+                    {"role": "assistant", "content": final_response.content},
+                ])
+                session_storage[request.session_id] = conversation_history
 
-                    final_response = groq_client.final_response(user_query=request.query, function_response=f"{function_response}")
-                    logger.warning("checking final response")
-                    logger.warning(final_response)
+            # ---------------------------
+            # General path if still no response
+            # ---------------------------
+            if not tool_calls and primary_intent not in ["appointment", "appointment_agent", "service", "service_agent", "support", "support_agent"]:
+                llm_output = response_message.content
+                yield {"event": "chunk", "data": llm_output}
+                conversation_history.append({"role": "assistant", "content": llm_output})
+                session_storage[request.session_id] = conversation_history
 
-                    data = {"name": function_name, "output": function_response, "message":final_response.content}
-                    yield {"event": "tool_output", "data":json.dumps(data)}
-
-                     # Update conversation history with tool call and response
-                    conversation_history.extend([
-                        {
-                            "tool_call_id": tool_call.id,
-                            "role": "tool", 
-                            "name": function_name,
-                            "content": f"Function {function_name} returned: {function_response}"
-                        },
-                        {
-                            "role": "assistant", 
-                            "content": final_response.content
-                        }
-                    ])
-
-                    # Update session storage
-                    session_storage[request.session_id] = conversation_history
-                    return
-            else:
-                yield {"event": "chunk", "data": "I dit not get it could you please califiy it"}
-                return
-            
         except Exception as e:
-            logger.exception("Error occurred while processing query")
+            logger.exception("Error while processing query")
             yield {"event": "error", "data": str(e)}
-    
+
     return EventSourceResponse(event_generator())

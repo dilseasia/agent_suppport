@@ -1,98 +1,116 @@
-from app.services.tools import appointment, dealership, weather
-from .schema import SupportRequest, SupportResponse
-from .prompt import SUPPORT_PROMPT
-from langchain_groq import ChatGroq
-from langgraph.checkpoint.memory import MemorySaver
-from langgraph.graph import MessagesState, StateGraph
-from langgraph.prebuilt import ToolNode, tools_condition
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.messages import HumanMessage, AIMessage
+# app/Agent/support/tool.py
 
-# -------------------------
-# Tools registry
-# -------------------------from app.services.tools import appointment, dealership, weather
-from .schema import SupportRequest, SupportResponse
-from .prompt import SUPPORT_PROMPT
-from langchain_groq import ChatGroq
+import re
+import random
 
-# -------------------------
-# Tools registry (handle functions directly)
-# -------------------------
-TOOLS = {
-    "appointment": appointment.handle,
-    "dealership": dealership.handle,
-    "weather": weather.handle,
-}
+# ---------------------------
+# Support Tool Functions
+# ---------------------------
 
-# -------------------------
-# Intent router
-# -------------------------
-def route_query(query: str) -> str | None:
-    q = query.lower()
-    if "appointment" in q or "book" in q or "cancel" in q:
-        return "appointment"
-    elif "dealer" in q or "car" in q or "vehicle" in q:
-        return "dealership"
-    elif "weather" in q or "temperature" in q or "rain" in q or "forecast" in q:
-        return "weather"
-    return None
+def check_ticket_status(ticket_id: str) -> dict:
+    """
+    Simulate checking the status of a support ticket.
+    """
+    fake_status = {
+        "T123": "Open - waiting for customer",
+        "T124": "In Progress - assigned to technician",
+        "T125": "Resolved - closed",
+    }
+    status = fake_status.get(ticket_id, "Ticket not found")
 
-# -------------------------
-# LLM Wrapper
-# -------------------------
-class GroqLLM:
-    def __init__(self, api_key: str, model: str):
-        self.api_key = api_key
-        self.model = model
-        self.llm = ChatGroq(
-            groq_api_key=self.api_key,
-            model=self.model,
-            temperature=0.7,
-            max_tokens=300,
-        )
-        print(f"Device set to use Groq LLM, model: {self.model}")
+    return {"action": "check_ticket_status", "ticket_id": ticket_id, "status": status}
 
-    def generate(self, prompt: str) -> str:
-        try:
-            resp = self.llm.invoke(prompt)
-            return resp.content.strip()
-        except Exception as e:
-            return None  # fail hone pe None return
 
-# -------------------------
-# Support Agent
-# -------------------------
-class SupportAgent:
-    def __init__(self):
-        # Directly passing API key and model here
-        self.llm = GroqLLM(
-            api_key="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",
-            model="openai/gpt-oss-20b"
-        )
-        print("Support Agent initialized with Groq LLM")
-        self.prompt = SUPPORT_PROMPT
-        self.fallback_msg = "Sorry, I don’t have information about that right now. Please try again later."
+def create_ticket(issue: str, priority: str = "medium") -> dict:
+    """
+    Simulate creating a new support ticket.
+    """
+    ticket_id = f"T{random.randint(100,999)}"
 
-    def handle_request(self, request: SupportRequest, thread_id: str = None) -> SupportResponse:
-        tool_name = route_query(request.message)
-        tool_output = None
+    return {
+        "action": "create_ticket",
+        "ticket_id": ticket_id,
+        "issue": issue,
+        "priority": priority,
+        "status": "created"
+    }
 
-        if tool_name and tool_name in TOOLS:
-            tool_output = TOOLS[tool_name](request.message)
 
-        llm_prompt = f"""{self.prompt}
-    User query: "{request.message}"
-    Tool output: {tool_output}
-    Respond naturally and concisely."""
+def escalate_ticket(ticket_id: str, level: str = "L2") -> dict:
+    """
+    Simulate escalating a support ticket.
+    """
+    return {
+        "action": "escalate_ticket",
+        "ticket_id": ticket_id,
+        "escalated_to": level,
+        "status": "escalated"
+    }
 
-        reply = self.llm.generate(llm_prompt)
 
-        if not reply:
-            reply = self.fallback_msg
+def get_faq(topic: str = None) -> dict:
+    """
+    Return FAQs or knowledge base entries.
+    """
+    faqs = {
+        "appointment": "You can book, reschedule, or cancel appointments directly with our support agent.",
+        "dealership": "Find dealership details by providing the dealership ID (e.g., NYC01, LA01).",
+        "services": "We offer maintenance, repairs, inspections, and more. Ask for a full list of services.",
+    }
 
-        return SupportResponse(
-            response=reply,
-            tool_used=tool_name,
-            tool_output=tool_output,
-            error_message=None if reply else "LLM failed",
-        )
+    if topic:
+        answer = faqs.get(topic.lower(), "No FAQ found for this topic.")
+    else:
+        answer = faqs
+
+    return {"action": "get_faq", "topic": topic, "answer": answer}
+
+
+# ---------------------------
+# Router Function
+# ---------------------------
+def handle(query: str) -> dict:
+    """
+    Support Agent Tool Router.
+    Takes a user query and decides which function to call.
+    """
+
+    query_lower = query.lower()
+
+    # --- Check Ticket Status ---
+    match = re.search(r"(ticket\s*#?\s*(\w+))|(status\s*of\s*ticket\s*(\w+))", query_lower)
+    if match:
+        ticket_id = match.group(2) or match.group(4)
+        return check_ticket_status(ticket_id)
+
+    # --- Create Ticket ---
+    if "create ticket" in query_lower or "new ticket" in query_lower or "raise issue" in query_lower:
+        # Extract priority if mentioned
+        if "high" in query_lower:
+            priority = "high"
+        elif "low" in query_lower:
+            priority = "low"
+        else:
+            priority = "medium"
+        return create_ticket(issue=query, priority=priority)
+
+    # --- Escalate Ticket ---
+    if "escalate" in query_lower:
+        match = re.search(r"ticket\s*#?\s*(\w+)", query_lower)
+        ticket_id = match.group(1) if match else "Unknown"
+        return escalate_ticket(ticket_id)
+
+    # --- FAQs ---
+    if "faq" in query_lower or "help" in query_lower or "support" in query_lower:
+        # Extract topic keyword
+        if "appointment" in query_lower:
+            return get_faq("appointment")
+        elif "dealership" in query_lower:
+            return get_faq("dealership")
+        elif "service" in query_lower:
+            return get_faq("services")
+        else:
+            return get_faq()
+
+    # --- Default Fallback ---
+    return {"action": "fallback", "message": "Sorry, I could not understand your request."}
