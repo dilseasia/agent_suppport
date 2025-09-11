@@ -7,6 +7,8 @@ from typing import AsyncGenerator, Dict, List, Dict, Any, Optional
 from dotenv import load_dotenv
 from app.config.prompt import final_prompt
 
+
+
 # Load environment variables
 load_dotenv()
 
@@ -32,7 +34,7 @@ class GroqLLMClient:
         """
         try:
             response = self.client.chat.completions.create(
-                model="llama-3.3-70b-versatile",  # Updated model
+                model="llama3-70b-8192",  # Llama 3.3 70B Versatile
                 messages=messages,
                 tools=tools,
                 tool_choice="auto"
@@ -54,7 +56,7 @@ class GroqLLMClient:
         ]
         try:
             response = self.client.chat.completions.create(
-                model="llama-3.3-70b-versatile",  # Updated model
+                model="llama3-70b-8192",  # Llama 3.3 70B Versatile
                 messages=messages
             )
             return response.choices[0].message
@@ -72,15 +74,13 @@ class GroqLLMClient:
         ]
         try:
             response = self.client.chat.completions.create(
-                model="llama-3.3-70b-versatile",  # Updated model
+                model="llama3-70b-8192",  # Llama 3.3 70B Versatile
                 messages=messages
             )
             return response.choices[0].message
         except Exception as e:
             self.logger.error(f"Error in Groq API call: {e}")
             return None
-
-
         
 
 # class GroqLLMClient:
