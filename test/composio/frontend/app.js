@@ -1,0 +1,215 @@
+// frontend/app.js
+// Base API URL for backend
+const API_BASE = "http://localhost:8000"; // Update if your backend runs elsewhere
+
+// Elements
+const createBtn = document.getElementById('createBtn');
+const createBtn2 = document.getElementById('createBtn2');
+const connectorModal = document.getElementById('connectorModal');
+const connectorsGrid = document.getElementById('connectorsGrid');
+const modalSearch = document.getElementById('modalSearch');
+const modalCategories = document.getElementById('modalCategories');
+const closeConnector = document.getElementById('closeConnector');
+const closeConnector2 = document.getElementById('closeConnector2');
+
+const authTableBody = document.getElementById('authTableBody');
+const emptyState = document.getElementById('emptyState');
+const searchInput = document.getElementById('searchInput');
+const categorySelect = document.getElementById('categorySelect');
+const refreshBtn = document.getElementById('refreshBtn');
+
+const logsModal = document.getElementById('logsModal');
+const logsContent = document.getElementById('logsContent');
+const logsTitle = document.getElementById('logsTitle');
+const closeLogs = document.getElementById('closeLogs');
+const closeLogs2 = document.getElementById('closeLogs2');
+const downloadLogs = document.getElementById('downloadLogs');
+
+const confirmDialog = document.getElementById('confirmDialog');
+const confirmMessage = document.getElementById('confirmMessage');
+const confirmYes = document.getElementById('confirmYes');
+const confirmNo = document.getElementById('confirmNo');
+
+const toast = document.getElementById('toast');
+
+let connectorsCache = [];
+let authConfigsCache = [];
+
+// helpers
+function showToast(msg, timeout = 3000) {
+  toast.textContent = msg;
+  toast.classList.add('show');
+  setTimeout(() => toast.classList.remove('show'), timeout);
+}
+function showModal(modal) { modal.setAttribute('aria-hidden','false'); modal.style.display='flex'; }
+function hideModal(modal) { modal.setAttribute('aria-hidden','true'); modal.style.display='none'; }
+
+function confirmAction(message) {
+  return new Promise(resolve => {
+    confirmMessage.textContent = message;
+    confirmDialog.setAttribute('aria-hidden','false');
+    confirmDialog.style.display = 'flex';
+    const onYes = () => { clean(); resolve(true); };
+    const onNo = () => { clean(); resolve(false); };
+    confirmYes.addEventListener('click', onYes, {once:true});
+    confirmNo.addEventListener('click', onNo, {once:true});
+    function clean() { confirmDialog.setAttribute('aria-hidden','true'); confirmDialog.style.display='none'; }
+  });
+}
+
+function debounce(fn, wait=300){
+  let t;
+  return (...args) => { clearTimeout(t); t = setTimeout(()=>fn(...args), wait); };
+}
+
+// Fetch /connectors from backend
+async function loadConnectors({search='', category=''} = {}) {
+  connectorsGrid.innerHTML = `<div class="muted" style="padding:18px">Loading connectors…</div>`;
+  try {
+    const payload = { search_term: search };
+    const r = await fetch(`${API_BASE}/connectors/search-toolkits`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    if (!r.ok) throw new Error(await r.text());
+    const data = await r.json();
+    connectorsCache = Array.isArray(data) ? data : [];
+    // filter by category if provided
+    if (category) {
+      connectorsCache = connectorsCache.filter(c => (c.category || '').toLowerCase() === category.toLowerCase());
+    }
+    renderConnectorCards(connectorsCache);
+  } catch (err) {
+    connectorsGrid.innerHTML = `<div class="muted" style="padding:18px">Could not load connectors — ${err.message}</div>`;
+  }
+}
+
+function renderConnectorCards(list) {
+  if (!list || list.length === 0) {
+    connectorsGrid.innerHTML = `<div class="muted" style="padding:18px">No connectors found.</div>`;
+    return;
+  }
+  connectorsGrid.innerHTML = '';
+  list.forEach(c => {
+    const card = document.createElement('div');
+    card.className = 'card';
+    const iconBG = c.color || '#2563eb';
+    const iconText = (c.name || 'C').split(' ').map(s=>s[0]).slice(0,2).join('');
+    card.innerHTML = `
+      <div class="icon" style="background:${iconBG}">${iconText}</div>
+      <div style="flex:1">
+        <h4>${c.name || c.id}</h4>
+        <p>${c.description || c.summary || c.category || ''}</p>
+      </div>
+      <div>
+        <button class="btn primary small" data-id="${c.slug || c.id}">Connect</button>
+      </div>
+    `;
+    card.querySelector('button').addEventListener('click', () => createAuthConfig(c.slug || c.id));
+    connectorsGrid.appendChild(card);
+  });
+}
+
+// Create auth config
+async function createAuthConfig(toolkitSlug) {
+  try {
+    const payload = { toolkit_slug: toolkitSlug, auth_type: "OAUTH2" };
+    const r = await fetch(`${API_BASE}/auth/create-auth-config`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data?.detail || JSON.stringify(data));
+    showToast('Auth config created successfully.');
+    hideModal(connectorModal);
+    loadAuthConfigs();
+  } catch (err) {
+    showToast(`Create failed: ${err.message}`);
+    console.error(err);
+  }
+}
+
+// Load auth configs
+async function loadAuthConfigs() {
+  authTableBody.innerHTML = `<tr><td colspan="7" style="padding:18px">Loading…</td></tr>`;
+  try {
+    const r = await fetch(`${API_BASE}/auth/list-auth-configs`);
+    if (!r.ok) throw new Error(await r.text());
+    const data = await r.json();
+    authConfigsCache = data.items || [];
+    renderAuthTable(authConfigsCache);
+  } catch (err) {
+    authTableBody.innerHTML = `<tr><td colspan="7" style="padding:18px">Failed to load: ${err.message}</td></tr>`;
+  }
+}
+
+function renderAuthTable(list) {
+  if (!list || list.length === 0) {
+    authTableBody.innerHTML = '';
+    emptyState.hidden = false;
+    return;
+  }
+  emptyState.hidden = true;
+  authTableBody.innerHTML = '';
+  list.forEach(cfg => {
+    const id = cfg.nanoid;
+    const name = cfg.name || cfg.toolkit?.slug || id;
+    const connCount = cfg.connections_count || 0;
+    const authType = cfg.auth_scheme || 'OAUTH2';
+    const lastUpdated = cfg.updated_at ? new Date(cfg.updated_at).toLocaleString() : '-';
+    const status = 'ENABLED';
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${name}</td>
+      <td>${cfg.toolkit?.slug || '-'}</td>
+      <td>${connCount}</td>
+      <td><span class="badge type">${authType}</span></td>
+      <td>${lastUpdated}</td>
+      <td><span class="badge success">${status}</span></td>
+      <td>
+        <button class="btn danger" data-delete="${id}">🗑 Delete</button>
+      </td>
+    `;
+    tr.querySelector('[data-delete]')?.addEventListener('click', async () => {
+      const confirmed = await confirmAction('Delete this auth config?');
+      if (!confirmed) return;
+      try {
+        const res = await fetch(`${API_BASE}/auth/delete-auth-config`, {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ nanoid: id })
+        });
+        if (!res.ok) throw new Error(await res.text());
+        showToast('Deleted successfully.');
+        loadAuthConfigs();
+      } catch(err) { showToast('Error: ' + err.message); }
+    });
+    authTableBody.appendChild(tr);
+  });
+}
+
+// Modal & UI wiring
+createBtn.addEventListener('click', () => { showModal(connectorModal); loadConnectors(); });
+createBtn2?.addEventListener('click', () => { showModal(connectorModal); loadConnectors(); });
+closeConnector.addEventListener('click', () => hideModal(connectorModal));
+closeConnector2.addEventListener('click', () => hideModal(connectorModal));
+refreshBtn.addEventListener('click', () => loadAuthConfigs());
+
+// Category & Search
+modalCategories.querySelectorAll('.chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    modalCategories.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+    chip.classList.add('active');
+    loadConnectors({category: chip.dataset.cat || ''});
+  });
+});
+modalSearch.addEventListener('input', debounce(()=> loadConnectors({search: modalSearch.value, category: document.querySelector('.chip.active')?.dataset?.cat || ''}), 300));
+searchInput.addEventListener('input', debounce(()=> loadAuthConfigs(), 400));
+categorySelect.addEventListener('change', ()=> loadAuthConfigs());
+
+// Initial load
+document.addEventListener('DOMContentLoaded', () => {
+  loadAuthConfigs();
+});
