@@ -1,7 +1,10 @@
+# backend/routes/auth_configs.py
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
-import webbrowser, requests
+from typing import Optional, List
+import requests
+import webbrowser
+import time
 from backend.config import API_KEY, BASE_URL, HEADERS
 
 router = APIRouter()
@@ -20,18 +23,8 @@ class CreateAuthConfigRequest(BaseModel):
 class DeleteAuthConfigRequest(BaseModel):
     nanoid: str
 
-class GetAuthConfigRequest(BaseModel):
-    nanoid: str
-
-class UpdateAuthConfigRequest(BaseModel):
-    nanoid: str
-    new_credentials: dict
-
 class ConnectRequest(BaseModel):
     auth_config_id: str
-
-class ToolSearchRequest(BaseModel):
-    search_term: str
 
 # -----------------------------
 # Endpoints
@@ -43,7 +36,6 @@ def create_auth_config(body: CreateAuthConfigRequest):
         body.config_name = f"{body.toolkit_slug.capitalize()} Auth Config"
 
     if body.bearer_token:
-        auth_type = "BEARER_TOKEN"
         data = {
             "toolkit": {"slug": body.toolkit_slug},
             "auth_config": {
@@ -54,7 +46,6 @@ def create_auth_config(body: CreateAuthConfigRequest):
             },
         }
     elif body.api_key_secret:
-        auth_type = "API_KEY"
         data = {
             "toolkit": {"slug": body.toolkit_slug},
             "auth_config": {
@@ -65,7 +56,6 @@ def create_auth_config(body: CreateAuthConfigRequest):
             },
         }
     else:
-        auth_type = "OAUTH2"
         data = {
             "toolkit": {"slug": body.toolkit_slug},
             "auth_config": {
@@ -89,14 +79,8 @@ def list_auth_configs():
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
     return resp.json()
 
-# -----------------------------
-# Fixed Delete Endpoint
-# -----------------------------
 @router.delete("/delete-auth-config/{nanoid}")
 def delete_auth_config(nanoid: str):
-    """
-    Delete an auth config by nanoid (fixed to avoid 422 errors)
-    """
     url = f"{BASE_URL}/auth_configs/{nanoid}"
     resp = requests.delete(url, headers=HEADERS)
     if not resp.ok:
@@ -104,15 +88,55 @@ def delete_auth_config(nanoid: str):
     return {"message": f"Auth config {nanoid} deleted successfully", "data": resp.json()}
 
 # -----------------------------
+# Connect Gmail Function
+# -----------------------------
+def connect_gmail(auth_config_id: str):
+    """Initiate Gmail OAuth connection and open browser"""
+    url = f"{BASE_URL}/connected_accounts/link"
+    user_id = "daljeet44"  # replace with your app user id if needed
+    payload = {"auth_config_id": auth_config_id, "user_id": user_id}
+
+    r = requests.post(url, headers=HEADERS, json=payload, timeout=20)
+    r.raise_for_status()
+    data = r.json()
+
+    redirect_url = data.get("redirect_url") or data.get("redirectUrl")
+    connected_account_id = data.get("connected_account_id")
+
+    if redirect_url:
+        webbrowser.open(redirect_url)
+
+    return connected_account_id
+
+def poll_connection_status(connected_account_id: str):
+    """Poll connection status until CONNECTED"""
+    url = f"{BASE_URL}/connected_accounts/{connected_account_id}"
+    for i in range(20):
+        r = requests.get(url, headers=HEADERS, timeout=15)
+        if not r.ok:
+            break
+        status = r.json().get("status")
+        if status and status.upper() in ("CONNECTED", "ACTIVE"):
+            return True
+        elif status and status.upper() in ("FAILED", "ERROR"):
+            return False
+        time.sleep(3)
+    return False
+
+# -----------------------------
 # Connect Endpoint
 # -----------------------------
 @router.post("/connect-auth-config")
 def connect_auth_config(body: ConnectRequest):
-    """
-    Connect an auth config using its ID
-    """
-    url = f"{BASE_URL}/auth_configs/{body.auth_config_id}/connect"
-    resp = requests.post(url, headers=HEADERS)
-    if not resp.ok:
-        raise HTTPException(status_code=resp.status_code, detail=resp.text)
-    return {"message": f"Auth config {body.auth_config_id} connected successfully", "data": resp.json()}
+    try:
+        connected_account_id = connect_gmail(body.auth_config_id)
+        if not connected_account_id:
+            raise HTTPException(status_code=500, detail="Failed to initiate connection.")
+
+        success = poll_connection_status(connected_account_id)
+        if not success:
+            raise HTTPException(status_code=500, detail="Connection failed or timed out.")
+
+        return {"message": "Connected successfully", "connected_account_id": connected_account_id}
+    except requests.RequestException as e:
+        raise HTTPException(status_code=500, detail=str(e))

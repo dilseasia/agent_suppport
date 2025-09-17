@@ -1,5 +1,3 @@
-// frontend/app.js
-// Base API URL for backend
 const API_BASE = "http://localhost:8000"; // Update if your backend runs elsewhere
 
 // Elements
@@ -18,13 +16,6 @@ const searchInput = document.getElementById('searchInput');
 const categorySelect = document.getElementById('categorySelect');
 const refreshBtn = document.getElementById('refreshBtn');
 
-const logsModal = document.getElementById('logsModal');
-const logsContent = document.getElementById('logsContent');
-const logsTitle = document.getElementById('logsTitle');
-const closeLogs = document.getElementById('closeLogs');
-const closeLogs2 = document.getElementById('closeLogs2');
-const downloadLogs = document.getElementById('downloadLogs');
-
 const confirmDialog = document.getElementById('confirmDialog');
 const confirmMessage = document.getElementById('confirmMessage');
 const confirmYes = document.getElementById('confirmYes');
@@ -35,7 +26,7 @@ const toast = document.getElementById('toast');
 let connectorsCache = [];
 let authConfigsCache = [];
 
-// helpers
+// Helpers
 function showToast(msg, timeout = 3000) {
   toast.textContent = msg;
   toast.classList.add('show');
@@ -62,7 +53,7 @@ function debounce(fn, wait=300){
   return (...args) => { clearTimeout(t); t = setTimeout(()=>fn(...args), wait); };
 }
 
-// Fetch /connectors from backend
+// Fetch connectors
 async function loadConnectors({search='', category=''} = {}) {
   connectorsGrid.innerHTML = `<div class="muted" style="padding:18px">Loading connectors…</div>`;
   try {
@@ -75,7 +66,6 @@ async function loadConnectors({search='', category=''} = {}) {
     if (!r.ok) throw new Error(await r.text());
     const data = await r.json();
     connectorsCache = Array.isArray(data) ? data : [];
-    // filter by category if provided
     if (category) {
       connectorsCache = connectorsCache.filter(c => (c.category || '').toLowerCase() === category.toLowerCase());
     }
@@ -111,29 +101,29 @@ function renderConnectorCards(list) {
   });
 }
 
-// Create auth config
+// ✅ Create auth config
 async function createAuthConfig(toolkitSlug) {
   try {
-    const payload = { toolkit_slug: toolkitSlug, auth_type: "OAUTH2" };
+    const createPayload = { toolkit_slug: toolkitSlug, auth_type: "OAUTH2" };
     const r = await fetch(`${API_BASE}/auth/create-auth-config`, {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify(payload)
+      body: JSON.stringify(createPayload)
     });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data?.detail || JSON.stringify(data));
-    showToast('Auth config created successfully.');
+    const created = await r.json();
+    if (!r.ok) throw new Error(created?.detail || JSON.stringify(created));
+    showToast('Auth config created.');
     hideModal(connectorModal);
     loadAuthConfigs();
   } catch (err) {
-    showToast(`Create failed: ${err.message}`);
+    showToast(`Error: ${err.message}`);
     console.error(err);
   }
 }
 
 // Load auth configs
 async function loadAuthConfigs() {
-  authTableBody.innerHTML = `<tr><td colspan="7" style="padding:18px">Loading…</td></tr>`;
+  authTableBody.innerHTML = `<tr><td colspan="8" style="padding:18px">Loading…</td></tr>`;
   try {
     const r = await fetch(`${API_BASE}/auth/list-auth-configs`);
     if (!r.ok) throw new Error(await r.text());
@@ -141,10 +131,11 @@ async function loadAuthConfigs() {
     authConfigsCache = data.items || [];
     renderAuthTable(authConfigsCache);
   } catch (err) {
-    authTableBody.innerHTML = `<tr><td colspan="7" style="padding:18px">Failed to load: ${err.message}</td></tr>`;
+    authTableBody.innerHTML = `<tr><td colspan="8" style="padding:18px">Failed to load: ${err.message}</td></tr>`;
   }
 }
 
+// ✅ FIXED: use correct id
 function renderAuthTable(list) {
   if (!list || list.length === 0) {
     authTableBody.innerHTML = '';
@@ -154,7 +145,7 @@ function renderAuthTable(list) {
   emptyState.hidden = true;
   authTableBody.innerHTML = '';
   list.forEach(cfg => {
-    const id = cfg.nanoid;
+    const id = cfg.nanoid; // ✅ FIXED from previous cfg.id
     const name = cfg.name || cfg.toolkit?.slug || id;
     const connCount = cfg.connections_count || 0;
     const authType = cfg.auth_scheme || 'OAUTH2';
@@ -169,35 +160,50 @@ function renderAuthTable(list) {
       <td>${lastUpdated}</td>
       <td><span class="badge success">${status}</span></td>
       <td>
-        <button class="btn danger" data-delete="${id}">🗑 Delete</button>
+        <button class="btn success small" data-connect="${id}">⚡ Connect</button>
+        <button class="btn danger small" data-delete="${id}">🗑 Delete</button>
       </td>
     `;
+
+    // ✅ Connect button
+    tr.querySelector('[data-connect]')?.addEventListener('click', async () => {
+      try {
+        const r = await fetch(`${API_BASE}/auth/connect-auth-config`, {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ auth_config_id: id })
+        });
+        const resp = await r.json();
+        if (!r.ok) throw new Error(resp?.detail || JSON.stringify(resp));
+        showToast('Connected successfully.');
+      } catch (err) { showToast('Error: ' + err.message); }
+    });
+
+    // ✅ Delete button
     tr.querySelector('[data-delete]')?.addEventListener('click', async () => {
       const confirmed = await confirmAction('Delete this auth config?');
       if (!confirmed) return;
       try {
-        const res = await fetch(`${API_BASE}/auth/delete-auth-config`, {
-          method: 'POST',
-          headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ nanoid: id })
+        const res = await fetch(`${API_BASE}/auth/delete-auth-config/${id}`, {
+          method: 'DELETE'
         });
         if (!res.ok) throw new Error(await res.text());
         showToast('Deleted successfully.');
         loadAuthConfigs();
       } catch(err) { showToast('Error: ' + err.message); }
     });
+
     authTableBody.appendChild(tr);
   });
 }
 
-// Modal & UI wiring
+// UI wiring
 createBtn.addEventListener('click', () => { showModal(connectorModal); loadConnectors(); });
 createBtn2?.addEventListener('click', () => { showModal(connectorModal); loadConnectors(); });
 closeConnector.addEventListener('click', () => hideModal(connectorModal));
 closeConnector2.addEventListener('click', () => hideModal(connectorModal));
 refreshBtn.addEventListener('click', () => loadAuthConfigs());
 
-// Category & Search
 modalCategories.querySelectorAll('.chip').forEach(chip => {
   chip.addEventListener('click', () => {
     modalCategories.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
@@ -209,7 +215,6 @@ modalSearch.addEventListener('input', debounce(()=> loadConnectors({search: moda
 searchInput.addEventListener('input', debounce(()=> loadAuthConfigs(), 400));
 categorySelect.addEventListener('change', ()=> loadAuthConfigs());
 
-// Initial load
 document.addEventListener('DOMContentLoaded', () => {
   loadAuthConfigs();
 });
