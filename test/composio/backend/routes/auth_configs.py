@@ -147,6 +147,7 @@ def connect_gmail(auth_config_id: str):
     return redirect_url, connected_account_id
 
 
+
 def poll_connection_status(connected_account_id: str):
     url = f"{BASE_URL}/connected_accounts/{connected_account_id}"
     for i in range(20):
