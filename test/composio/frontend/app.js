@@ -32,19 +32,30 @@ function showToast(msg, timeout = 3000) {
   toast.classList.add('show');
   setTimeout(() => toast.classList.remove('show'), timeout);
 }
-function showModal(modal) { modal.setAttribute('aria-hidden','false'); modal.style.display='flex'; }
-function hideModal(modal) { modal.setAttribute('aria-hidden','true'); modal.style.display='none'; }
+
+function showModal(modal) {
+  modal.setAttribute('aria-hidden','false');
+  modal.style.display='flex';
+}
+
+function hideModal(modal) {
+  modal.setAttribute('aria-hidden','true');
+  modal.style.display='none';
+}
 
 function confirmAction(message) {
   return new Promise(resolve => {
     confirmMessage.textContent = message;
     confirmDialog.setAttribute('aria-hidden','false');
-    confirmDialog.style.display = 'flex';
+    confirmDialog.style.display='flex';
     const onYes = () => { clean(); resolve(true); };
     const onNo = () => { clean(); resolve(false); };
     confirmYes.addEventListener('click', onYes, {once:true});
     confirmNo.addEventListener('click', onNo, {once:true});
-    function clean() { confirmDialog.setAttribute('aria-hidden','true'); confirmDialog.style.display='none'; }
+    function clean() {
+      confirmDialog.setAttribute('aria-hidden','true');
+      confirmDialog.style.display='none';
+    }
   });
 }
 
@@ -96,7 +107,7 @@ function renderConnectorCards(list) {
         <button class="btn primary small" data-id="${c.slug || c.id}">Connect</button>
       </div>
     `;
-    card.querySelector('button').addEventListener('click', () => createAuthConfig(c.slug || c.id));
+    card.querySelector('button')?.addEventListener('click', () => createAuthConfig(c.slug || c.id));
     connectorsGrid.appendChild(card);
   });
 }
@@ -135,7 +146,7 @@ async function loadAuthConfigs() {
   }
 }
 
-// ✅ FIXED: use correct id
+// ✅ Render Auth Table with Connect/Delete/Enable/Disable
 function renderAuthTable(list) {
   if (!list || list.length === 0) {
     authTableBody.innerHTML = '';
@@ -145,12 +156,15 @@ function renderAuthTable(list) {
   emptyState.hidden = true;
   authTableBody.innerHTML = '';
   list.forEach(cfg => {
-    const id = cfg.nanoid; // ✅ FIXED from previous cfg.id
+    const id = cfg.nanoid || cfg.id;
+    if (!id) return;
+
     const name = cfg.name || cfg.toolkit?.slug || id;
     const connCount = cfg.connections_count || 0;
     const authType = cfg.auth_scheme || 'OAUTH2';
     const lastUpdated = cfg.updated_at ? new Date(cfg.updated_at).toLocaleString() : '-';
-    const status = 'ENABLED';
+    const status = cfg.status || 'ENABLED';
+
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${name}</td>
@@ -158,14 +172,15 @@ function renderAuthTable(list) {
       <td>${connCount}</td>
       <td><span class="badge type">${authType}</span></td>
       <td>${lastUpdated}</td>
-      <td><span class="badge success">${status}</span></td>
+      <td><span class="badge ${status === 'ENABLED' ? 'success' : 'danger'}">${status}</span></td>
       <td>
         <button class="btn success small" data-connect="${id}">⚡ Connect</button>
+        <button class="btn warning small" data-toggle="${id}">${status === 'ENABLED' ? 'Disable' : 'Enable'}</button>
         <button class="btn danger small" data-delete="${id}">🗑 Delete</button>
       </td>
     `;
 
-    // ✅ Connect button
+    // Connect button → open Google OAuth and refresh count
     tr.querySelector('[data-connect]')?.addEventListener('click', async () => {
       try {
         const r = await fetch(`${API_BASE}/auth/connect-auth-config`, {
@@ -175,11 +190,41 @@ function renderAuthTable(list) {
         });
         const resp = await r.json();
         if (!r.ok) throw new Error(resp?.detail || JSON.stringify(resp));
-        showToast('Connected successfully.');
-      } catch (err) { showToast('Error: ' + err.message); }
+        if (resp.redirect_url) {
+          window.open(resp.redirect_url, '_blank');
+        }
+        // ✅ Refresh to update connection count
+        setTimeout(loadAuthConfigs, 2000);
+      } catch (err) {
+        showToast('Error: ' + err.message);
+      }
     });
 
-    // ✅ Delete button
+    // ✅ Status toggle button → Enable/Disable in place
+    tr.querySelector('[data-toggle]')?.addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      const statusBadge = tr.querySelector('td:nth-child(6) .badge');
+      const currentStatus = statusBadge.textContent.trim();
+      const newStatus = currentStatus === 'ENABLED' ? 'DISABLED' : 'ENABLED';
+      try {
+        const r = await fetch(`${API_BASE}/auth/set-auth-config-status`, {
+          method: 'PATCH',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ nanoid: id, status: newStatus })
+        });
+        const resp = await r.json();
+        if (!r.ok) throw new Error(resp?.detail || JSON.stringify(resp));
+        // update UI instantly
+        statusBadge.textContent = newStatus;
+        statusBadge.className = `badge ${newStatus === 'ENABLED' ? 'success' : 'danger'}`;
+        btn.textContent = newStatus === 'ENABLED' ? 'Disable' : 'Enable';
+        showToast(`Status updated to ${newStatus}`);
+      } catch(err) {
+        showToast('Error: ' + err.message);
+      }
+    });
+
+    // Delete button
     tr.querySelector('[data-delete]')?.addEventListener('click', async () => {
       const confirmed = await confirmAction('Delete this auth config?');
       if (!confirmed) return;
@@ -190,7 +235,9 @@ function renderAuthTable(list) {
         if (!res.ok) throw new Error(await res.text());
         showToast('Deleted successfully.');
         loadAuthConfigs();
-      } catch(err) { showToast('Error: ' + err.message); }
+      } catch(err) {
+        showToast('Error: ' + err.message);
+      }
     });
 
     authTableBody.appendChild(tr);
@@ -211,9 +258,16 @@ modalCategories.querySelectorAll('.chip').forEach(chip => {
     loadConnectors({category: chip.dataset.cat || ''});
   });
 });
-modalSearch.addEventListener('input', debounce(()=> loadConnectors({search: modalSearch.value, category: document.querySelector('.chip.active')?.dataset?.cat || ''}), 300));
-searchInput.addEventListener('input', debounce(()=> loadAuthConfigs(), 400));
-categorySelect.addEventListener('change', ()=> loadAuthConfigs());
+
+modalSearch.addEventListener('input', debounce(() =>
+  loadConnectors({
+    search: modalSearch.value,
+    category: document.querySelector('.chip.active')?.dataset?.cat || ''
+  }), 300
+));
+
+searchInput.addEventListener('input', debounce(() => loadAuthConfigs(), 400));
+categorySelect.addEventListener('change', () => loadAuthConfigs());
 
 document.addEventListener('DOMContentLoaded', () => {
   loadAuthConfigs();

@@ -3,7 +3,6 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 import requests
-import webbrowser
 import time
 from backend.config import API_KEY, BASE_URL, HEADERS
 
@@ -20,11 +19,19 @@ class CreateAuthConfigRequest(BaseModel):
     scopes: Optional[List[str]] = []
     config_name: Optional[str] = None
 
+
 class DeleteAuthConfigRequest(BaseModel):
     nanoid: str
 
+
 class ConnectRequest(BaseModel):
     auth_config_id: str
+
+
+class StatusRequest(BaseModel):
+    nanoid: str  # auth_config id
+    status: str  # "ENABLED" or "DISABLED"
+
 
 # -----------------------------
 # Endpoints
@@ -71,13 +78,50 @@ def create_auth_config(body: CreateAuthConfigRequest):
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
     return resp.json()
 
+
 @router.get("/list-auth-configs")
 def list_auth_configs():
-    url = f"{BASE_URL}/auth_configs"
-    resp = requests.get(url, headers=HEADERS)
-    if not resp.ok:
-        raise HTTPException(status_code=resp.status_code, detail=resp.text)
-    return resp.json()
+    # Get all auth configs
+    configs_url = f"{BASE_URL}/auth_configs"
+    configs_resp = requests.get(configs_url, headers=HEADERS)
+    if not configs_resp.ok:
+        raise HTTPException(status_code=configs_resp.status_code, detail=configs_resp.text)
+    configs_data = configs_resp.json()
+    configs = configs_data.get("items", [])
+
+    # Get all connected accounts
+    connected_url = f"{BASE_URL}/connected_accounts"
+    connected_resp = requests.get(connected_url, headers=HEADERS)
+    if not connected_resp.ok:
+        raise HTTPException(status_code=connected_resp.status_code, detail=connected_resp.text)
+    connected_data = connected_resp.json()
+    connected_accounts = connected_data.get("items", [])
+
+    # Count how many connected accounts are linked to each auth_config_id
+    counts = {}
+    for acc in connected_accounts:
+        raw_auth = acc.get("auth_config_id") or acc.get("authConfigId") or acc.get("auth_config")
+        if not raw_auth:
+            continue
+
+        # If it's a dict, get the string id/nanoid
+        if isinstance(raw_auth, dict):
+            auth_id = raw_auth.get("nanoid") or raw_auth.get("id")
+        else:
+            auth_id = raw_auth
+
+        if not auth_id:
+            continue
+
+        counts[auth_id] = counts.get(auth_id, 0) + 1
+
+    # Attach count to each config
+    for cfg in configs:
+        cfg_id = cfg.get("nanoid") or cfg.get("id")
+        cfg["connections_count"] = counts.get(cfg_id, 0)
+
+    return {"items": configs}
+
 
 @router.delete("/delete-auth-config/{nanoid}")
 def delete_auth_config(nanoid: str):
@@ -87,29 +131,23 @@ def delete_auth_config(nanoid: str):
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
     return {"message": f"Auth config {nanoid} deleted successfully", "data": resp.json()}
 
+
 # -----------------------------
 # Connect Gmail Function
 # -----------------------------
 def connect_gmail(auth_config_id: str):
-    """Initiate Gmail OAuth connection and open browser"""
     url = f"{BASE_URL}/connected_accounts/link"
-    user_id = "daljeet44"  # replace with your app user id if needed
+    user_id = "daljeet44"
     payload = {"auth_config_id": auth_config_id, "user_id": user_id}
-
     r = requests.post(url, headers=HEADERS, json=payload, timeout=20)
     r.raise_for_status()
     data = r.json()
-
     redirect_url = data.get("redirect_url") or data.get("redirectUrl")
     connected_account_id = data.get("connected_account_id")
+    return redirect_url, connected_account_id
 
-    if redirect_url:
-        webbrowser.open(redirect_url)
-
-    return connected_account_id
 
 def poll_connection_status(connected_account_id: str):
-    """Poll connection status until CONNECTED"""
     url = f"{BASE_URL}/connected_accounts/{connected_account_id}"
     for i in range(20):
         r = requests.get(url, headers=HEADERS, timeout=15)
@@ -123,20 +161,30 @@ def poll_connection_status(connected_account_id: str):
         time.sleep(3)
     return False
 
+
 # -----------------------------
 # Connect Endpoint
 # -----------------------------
 @router.post("/connect-auth-config")
 def connect_auth_config(body: ConnectRequest):
     try:
-        connected_account_id = connect_gmail(body.auth_config_id)
-        if not connected_account_id:
-            raise HTTPException(status_code=500, detail="Failed to initiate connection.")
+        redirect_url, connected_account_id = connect_gmail(body.auth_config_id)
+        if not redirect_url:
+            raise HTTPException(status_code=500, detail="Failed to get redirect URL from backend.")
+        return {"redirect_url": redirect_url, "connected_account_id": connected_account_id}
+    except requests.RequestException as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-        success = poll_connection_status(connected_account_id)
-        if not success:
-            raise HTTPException(status_code=500, detail="Connection failed or timed out.")
 
-        return {"message": "Connected successfully", "connected_account_id": connected_account_id}
+# -----------------------------
+# Status Toggle Endpoint
+# -----------------------------
+@router.patch("/set-auth-config-status")
+def set_auth_config_status(body: StatusRequest):
+    url = f"{BASE_URL}/auth_configs/{body.nanoid}/{body.status}"
+    try:
+        r = requests.patch(url, headers=HEADERS)
+        r.raise_for_status()
+        return {"message": f"Auth config {body.nanoid} status set to {body.status}", "data": r.json()}
     except requests.RequestException as e:
         raise HTTPException(status_code=500, detail=str(e))
