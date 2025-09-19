@@ -22,3 +22,12 @@ class StatusRequest(BaseModel):
     organization_id: str
     nanoid: str
     status: str  # "ENABLED" or "DISABLED"
+
+class GmailConnectRequest(BaseModel):
+    api_key: str
+    auth_config_id: str
+    user_id: str 
+
+class ToolkitSearchRequest(BaseModel):
+    api_key: str
+    search_term: str 
