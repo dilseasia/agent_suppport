@@ -1,5 +1,5 @@
 # backend/routes/auth_configs.py
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional, List
 import requests
@@ -12,6 +12,7 @@ router = APIRouter()
 # Request Models
 # -----------------------------
 class CreateAuthConfigRequest(BaseModel):
+    organization_id: str
     toolkit_slug: str
     auth_type: str = "OAUTH2"
     bearer_token: Optional[str] = None
@@ -21,14 +22,17 @@ class CreateAuthConfigRequest(BaseModel):
 
 
 class DeleteAuthConfigRequest(BaseModel):
+    organization_id: str
     nanoid: str
 
 
 class ConnectRequest(BaseModel):
+    organization_id: str
     auth_config_id: str
 
 
 class StatusRequest(BaseModel):
+    organization_id: str
     nanoid: str  # auth_config id
     status: str  # "ENABLED" or "DISABLED"
 
@@ -38,7 +42,8 @@ class StatusRequest(BaseModel):
 # -----------------------------
 @router.post("/create-auth-config")
 def create_auth_config(body: CreateAuthConfigRequest):
-    url = f"{BASE_URL}/auth_configs"
+    url = f"{BASE_URL}/auth_configs?organization_id={body.organization_id}"
+
     if not body.config_name:
         body.config_name = f"{body.toolkit_slug.capitalize()} Auth Config"
 
@@ -80,42 +85,34 @@ def create_auth_config(body: CreateAuthConfigRequest):
 
 
 @router.get("/list-auth-configs")
-def list_auth_configs():
-    # Get all auth configs
-    configs_url = f"{BASE_URL}/auth_configs"
+def list_auth_configs(organization_id: str = Query(..., description="Organization ID")):
+    configs_url = f"{BASE_URL}/auth_configs?organization_id={organization_id}"
     configs_resp = requests.get(configs_url, headers=HEADERS)
     if not configs_resp.ok:
         raise HTTPException(status_code=configs_resp.status_code, detail=configs_resp.text)
     configs_data = configs_resp.json()
     configs = configs_data.get("items", [])
 
-    # Get all connected accounts
-    connected_url = f"{BASE_URL}/connected_accounts"
+    # Get connected accounts for this organization
+    connected_url = f"{BASE_URL}/connected_accounts?organization_id={organization_id}"
     connected_resp = requests.get(connected_url, headers=HEADERS)
     if not connected_resp.ok:
         raise HTTPException(status_code=connected_resp.status_code, detail=connected_resp.text)
     connected_data = connected_resp.json()
     connected_accounts = connected_data.get("items", [])
 
-    # Count how many connected accounts are linked to each auth_config_id
+    # Count connections per auth_config
     counts = {}
     for acc in connected_accounts:
         raw_auth = acc.get("auth_config_id") or acc.get("authConfigId") or acc.get("auth_config")
-        if not raw_auth:
-            continue
-
-        # If it's a dict, get the string id/nanoid
         if isinstance(raw_auth, dict):
             auth_id = raw_auth.get("nanoid") or raw_auth.get("id")
         else:
             auth_id = raw_auth
-
         if not auth_id:
             continue
-
         counts[auth_id] = counts.get(auth_id, 0) + 1
 
-    # Attach count to each config
     for cfg in configs:
         cfg_id = cfg.get("nanoid") or cfg.get("id")
         cfg["connections_count"] = counts.get(cfg_id, 0)
@@ -124,8 +121,8 @@ def list_auth_configs():
 
 
 @router.delete("/delete-auth-config/{nanoid}")
-def delete_auth_config(nanoid: str):
-    url = f"{BASE_URL}/auth_configs/{nanoid}"
+def delete_auth_config(nanoid: str, organization_id: str = Query(...)):
+    url = f"{BASE_URL}/auth_configs/{nanoid}?organization_id={organization_id}"
     resp = requests.delete(url, headers=HEADERS)
     if not resp.ok:
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
@@ -135,10 +132,9 @@ def delete_auth_config(nanoid: str):
 # -----------------------------
 # Connect Gmail Function
 # -----------------------------
-def connect_gmail(auth_config_id: str):
-    url = f"{BASE_URL}/connected_accounts/link"
-    user_id = "daljeet44"
-    payload = {"auth_config_id": auth_config_id, "user_id": user_id}
+def connect_gmail(organization_id: str, auth_config_id: str):
+    url = f"{BASE_URL}/connected_accounts/link?organization_id={organization_id}"
+    payload = {"auth_config_id": auth_config_id, "user_id": "daljeet44"}  # <-- dynamic user_id later
     r = requests.post(url, headers=HEADERS, json=payload, timeout=20)
     r.raise_for_status()
     data = r.json()
@@ -147,29 +143,10 @@ def connect_gmail(auth_config_id: str):
     return redirect_url, connected_account_id
 
 
-
-def poll_connection_status(connected_account_id: str):
-    url = f"{BASE_URL}/connected_accounts/{connected_account_id}"
-    for i in range(20):
-        r = requests.get(url, headers=HEADERS, timeout=15)
-        if not r.ok:
-            break
-        status = r.json().get("status")
-        if status and status.upper() in ("CONNECTED", "ACTIVE"):
-            return True
-        elif status and status.upper() in ("FAILED", "ERROR"):
-            return False
-        time.sleep(3)
-    return False
-
-
-# -----------------------------
-# Connect Endpoint
-# -----------------------------
 @router.post("/connect-auth-config")
 def connect_auth_config(body: ConnectRequest):
     try:
-        redirect_url, connected_account_id = connect_gmail(body.auth_config_id)
+        redirect_url, connected_account_id = connect_gmail(body.organization_id, body.auth_config_id)
         if not redirect_url:
             raise HTTPException(status_code=500, detail="Failed to get redirect URL from backend.")
         return {"redirect_url": redirect_url, "connected_account_id": connected_account_id}
@@ -177,12 +154,9 @@ def connect_auth_config(body: ConnectRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# -----------------------------
-# Status Toggle Endpoint
-# -----------------------------
 @router.patch("/set-auth-config-status")
 def set_auth_config_status(body: StatusRequest):
-    url = f"{BASE_URL}/auth_configs/{body.nanoid}/{body.status}"
+    url = f"{BASE_URL}/auth_configs/{body.nanoid}/{body.status}?organization_id={body.organization_id}"
     try:
         r = requests.patch(url, headers=HEADERS)
         r.raise_for_status()
