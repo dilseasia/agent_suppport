@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Composio Dashboard</title>
+<style>
+body { font-family: sans-serif; margin: 20px; }
+.btn { padding: 6px 12px; margin: 2px; cursor: pointer; border: none; border-radius: 4px; }
+.primary { background: #2563eb; color: #fff; }
+.success { background: #16a34a; color: #fff; }
+.warning { background: #f59e0b; color: #fff; }
+.danger { background: #dc2626; color: #fff; }
+.small { font-size: 12px; padding: 4px 8px; }
+.card { border: 1px solid #ddd; padding: 10px; margin: 5px; border-radius: 6px; box-shadow:0 2px 5px rgba(0,0,0,0.1); transition:all 0.2s; cursor:pointer; }
+.card:hover { transform:scale(1.05); }
+table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+td, th { border: 1px solid #ddd; padding: 8px; text-align:center; }
+#toast { position: fixed; bottom: 20px; right: 20px; background: #333; color: #fff; padding: 8px 16px; border-radius: 6px; display: none; }
+#toast.show { display: block; }
+#connectorModal { display: none; position: fixed; top:0; left:0; width:100%; height:100%; background: rgba(0,0,0,0.4); justify-content:center; align-items:center; }
+#connectorModal .content { background:#fff; padding:20px; border-radius:6px; width:600px; max-height:80vh; overflow:auto; }
+#connectorsGrid { display:flex; flex-wrap:wrap; gap:12px; justify-content:center; }
+#connectorsGrid .card img { width:80px; height:80px; object-fit:contain; margin-bottom:5px; }
+#connectorsGrid .card button { width:100%; margin-top:5px; }
+#hiddenIds { display:none; }
+</style>
+</head>
+<body>
+
+<!-- Hidden Org/User ID (send once) -->
+<div id="hiddenIds">
+  <input type="hidden" id="orgInput" value="org_123">
+  <input type="hidden" id="userInputField" value="user_123">
+</div>
+
+<h2>Auth Configs</h2>
+<button id="createBtn" class="btn primary">+ Create</button>
+<button id="refreshBtn" class="btn">⟳ Refresh</button>
+
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Toolkit</th>
+<th>Connections</th>
+<th>Status</th>
+<th>Actions</th>
+</tr>
+</thead>
+<tbody id="authTableBody"></tbody>
+</table>
+<div id="emptyState" style="display:none; padding:20px; text-align:center; color:#666;">No configs yet</div>
+
+<!-- Connector Modal -->
+<div id="connectorModal">
+<div class="content">
+<h3>Choose Connector</h3>
+<input id="searchConnector" placeholder="Search connector" style="width:100%; margin-bottom:10px; padding:5px;">
+<div id="connectorsGrid"></div>
+<button id="closeConnector" class="btn">Close</button>
+</div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

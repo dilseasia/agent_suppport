@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Auth Config Manager</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg width="36" height="36" viewBox="0 0 24 24" aria-hidden><rect width="24" height="24" rx="6" fill="#0f172a"></rect><path d="M6 12h12" stroke="#fff" stroke-width="1.5" stroke-linecap="round"></path></svg>
+      <div class="brand-text">
+        <h1>Connector Studio</h1>
+        <p class="muted">Manage auth configs · connectors · logs</p>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button class="btn ghost" id="refreshBtn" title="Refresh list">⟳</button>
+      <button class="btn primary" id="createBtn">+ Create Auth Config</button>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="panel">
+      <div class="panel-head">
+        <div class="search-wrap">
+          <input id="searchInput" placeholder="Search connectors or auth-configs..." aria-label="Search" />
+          <select id="categorySelect" title="Filter by category">
+            <option value="">All categories</option>
+            <option value="calendar">Calendar</option>
+            <option value="email">Email</option>
+            <option value="storage">Storage</option>
+            <option value="crm">CRM</option>
+            <option value="chat">Chat</option>
+          </select>
+        </div>
+
+        <div class="small-help">
+          <span class="muted">Click <strong>Create Auth Config</strong> to pick a connector and start OAuth</span>
+        </div>
+      </div>
+
+      <div class="panel-body">
+        <table class="auth-table" id="authTable" aria-live="polite">
+          <thead>
+            <tr>
+              <th>Auth Config</th>
+              <th>Connector</th>
+              <th>Connections</th>
+              <th>Auth Type</th>
+              <th>Last Updated</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="authTableBody">
+            <!-- Populated by JS -->
+          </tbody>
+        </table>
+
+        <div id="emptyState" class="empty" hidden>
+          <h3>No auth configs yet</h3>
+          <p>Create an auth config to get started. Click the <strong>Create Auth Config</strong> button above.</p>
+          <button class="btn primary" id="createBtn2">Create Auth Config</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Connector Picker Modal -->
+  <div class="modal" id="connectorModal" aria-hidden="true">
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="connectorTitle">
+      <div class="modal-header">
+        <h2 id="connectorTitle">Select a Connector</h2>
+        <button class="btn icon" id="closeConnector">✕</button>
+      </div>
+
+      <div class="modal-controls">
+        <input id="modalSearch" placeholder="Search connectors..." />
+        <div class="chip-row" id="modalCategories">
+          <button class="chip active" data-cat="">All</button>
+          <button class="chip" data-cat="calendar">Calendar</button>
+          <button class="chip" data-cat="email">Email</button>
+          <button class="chip" data-cat="storage">Storage</button>
+          <button class="chip" data-cat="crm">CRM</button>
+        </div>
+      </div>
+
+      <div class="cards-grid" id="connectorsGrid" aria-live="polite">
+        <!-- connector cards -->
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn ghost" id="closeConnector2">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Logs Modal -->
+  <div class="modal" id="logsModal" aria-hidden="true">
+    <div class="modal-panel">
+      <div class="modal-header">
+        <h3 id="logsTitle">Logs</h3>
+        <button class="btn icon" id="closeLogs">✕</button>
+      </div>
+      <pre id="logsContent" class="logs-content">Loading...</pre>
+      <div class="modal-footer">
+        <button class="btn ghost" id="closeLogs2">Close</button>
+        <button class="btn" id="downloadLogs">Download</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirm Modal -->
+  <div class="confirm" id="confirmDialog" aria-hidden="true">
+    <div class="confirm-panel">
+      <p id="confirmMessage"></p>
+      <div class="confirm-actions">
+        <button class="btn ghost" id="confirmNo">Cancel</button>
+        <button class="btn danger" id="confirmYes">Yes</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="toast" aria-live="polite" aria-atomic="true"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
