@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routes import workflow_routes
+from routes import workflow_routes,calender
 from database import Base, engine
 from models.item_model import AuthConfig  # import all your models here
 
@@ -16,6 +16,7 @@ app.add_middleware(
 
 # Include routes from workflow.py exactly as defined (prefix already set in router)
 app.include_router(workflow_routes.router)  # router already has prefix="/routes"
+app.include_router(calender.router)
 
 # Root endpoint
 @app.get("/")
